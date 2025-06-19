@@ -1,4 +1,4 @@
-# sitemap-generator-github
+# sitemap auto generator github
 #### Author: Bocaletto Luca
 A small toolkit for regenerating `sitemap.xml` for your GitHub Pages portfolio. This repo provides three interchangeable methods—pick the one that fits your workflow best:
 
