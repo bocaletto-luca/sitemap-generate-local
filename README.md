@@ -81,5 +81,6 @@ The job will:
 
 ## License
 
-MIT © bocaletto-luca  
-```
+GPL v3 © bocaletto-luca  
+
+---
