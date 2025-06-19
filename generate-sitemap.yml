@@ -1,0 +1,68 @@
+name: Generate sitemap
+
+# 1) concedi permesso di scrittura sul repo al GITHUB_TOKEN
+permissions:
+  contents: write
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build-sitemap:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          # assicurati che persist-credentials sia true per usare GITHUB_TOKEN
+          persist-credentials: true
+
+      - name: Install jq
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq
+
+      - name: Generate sitemap.xml
+        run: |
+          USER="bocaletto-luca"
+          TODAY=$(date +%F)
+          echo '<?xml version="1.0" encoding="UTF-8"?>' > sitemap.xml
+          echo '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">' >> sitemap.xml
+
+          # home page
+          echo '  <url>' >> sitemap.xml
+          echo "    <loc>https://${USER}.github.io/</loc>" >> sitemap.xml
+          echo "    <lastmod>${TODAY}</lastmod>" >> sitemap.xml
+          echo '    <changefreq>daily</changefreq>' >> sitemap.xml
+          echo '    <priority>1.0</priority>' >> sitemap.xml
+          echo '  </url>' >> sitemap.xml
+
+          # tutti i repo con Pages abilitati
+          curl -s "https://api.github.com/users/${USER}/repos?per_page=100" \
+            | jq -r '.[] | select(.has_pages==true) | .name + " " + (.pushed_at[0:10])' \
+            | while read repo date; do
+                echo '  <url>' >> sitemap.xml
+                echo "    <loc>https://${USER}.github.io/${repo}/</loc>" >> sitemap.xml
+                echo "    <lastmod>${date}</lastmod>" >> sitemap.xml
+                echo '    <changefreq>monthly</changefreq>' >> sitemap.xml
+                echo '    <priority>0.8</priority>' >> sitemap.xml
+                echo '  </url>' >> sitemap.xml
+              done
+
+          echo '</urlset>' >> sitemap.xml
+
+      - name: Commit & push sitemap
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add sitemap.xml robots.txt
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "chore: update sitemap"
+            git push
+          fi
