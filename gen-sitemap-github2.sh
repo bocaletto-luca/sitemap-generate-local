@@ -1,117 +1,85 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-#### CONFIGURAZIONE ####
 USER="bocaletto-luca"
 DOMAIN="${USER}.github.io"
-BASE_URL="https://${DOMAIN}"
-TODAY=$(date +%F)
+BASE="https://${DOMAIN}"
 SITEMAP="sitemap.xml"
-SPIDER_LOG="spider.log"
+TMPDIR="tmp_repos"
 
-#### CONTROLLA LE DIPENDENZE ####
-for cmd in curl jq wget awk grep sed sort; do
+# 0) Controllo dipendenze
+for cmd in git grep sed sort uniq; do
   command -v $cmd >/dev/null 2>&1 || {
-    echo "❌ Installa '$cmd' (sudo apt install $cmd o brew install $cmd)"
+    echo "❌ Serve '$cmd' – installalo con 'sudo apt install $cmd' o 'brew install $cmd'"
     exit 1
   }
 done
 
-######################################
-# 1) RACCOLTA DEI REPO (API PAGINATE) #
-######################################
-echo "1) Recupero lista di tutti i repo GitHub…"
-pages_repos=()
-page=1
-
-while :; do
-  echo "   → pagina $page"
-  resp=$(curl -s "https://api.github.com/users/${USER}/repos?per_page=100&page=${page}")
-  # Estrai solo i nomi dei repo Pages-enabled
-  names=$(jq -r '.[] | select(.has_pages==true) | .name' <<<"$resp")
-  [[ -z "$names" ]] && break
-  pages_repos+=( $names )
-  ((page++))
-done
-
-# De-duplica (anche se in realtà l’API non ripete)
-pages_repos=( $(printf "%s\n" "${pages_repos[@]}" | sort -u) )
-echo "→ trovati ${#pages_repos[@]} repo con GitHub Pages attivo"
-
-if [[ ${#pages_repos[@]} -eq 0 ]]; then
-  echo "⚠️  Non ho trovato alcun repo con Pages abilitato!"
-  exit 1
-fi
-
-####################################
-# 2) SPIDERING STATICO DI TUTTI i SITI #
-####################################
-echo "2) Spidering di root + tutti i repo Pages…"
-rm -f "$SPIDER_LOG"
-
-# spiderizza la root
-wget --spider --recursive --no-parent --domains="$DOMAIN" \
-     --accept html,htm --output-file="$SPIDER_LOG" "$BASE_URL/"
-
-# spiderizza ciascun repo Pages
-for repo in "${pages_repos[@]}"; do
-  url="${BASE_URL}/${repo}/"
-  echo "   • ${url}"
-  wget --spider --recursive --no-parent --domains="$DOMAIN" \
-       --accept html,htm --append-output="$SPIDER_LOG" "$url"
-done
-
-##################################################
-# 3) ESTRAZIONE e NORMALIZZAZIONE DEGLI URL UNICI #
-##################################################
-echo "3) Estrazione URL unici dal log…"
-mapfile -t URLS < <(
-  grep '^--' "$SPIDER_LOG" \
-    | awk '{print $3}' \
-    | grep "^${BASE_URL}" \
-    | sed -E 's/[?#].*$//' \
+# 1) Estrai SOLO i nomi dei repo da sitemap.xml
+#    Matchiamo <loc>https://DOMAIN/REPO/ o /REPO/index.html</loc>
+mapfile -t repos < <(
+  grep -E "<loc>${BASE}/[A-Za-z0-9._-]+(/|/index.html)" "$SITEMAP" \
+    | sed -E "s#.*${BASE}/([^/]+)(/.*)?</loc>#\1#" \
     | sort -u
 )
 
-echo "→ ${#URLS[@]} URL trovati"
-
-if (( ${#URLS[@]} == 0 )); then
-  echo "⚠️  Errore: nessun URL estratto. Controlla $SPIDER_LOG"
+if (( ${#repos[@]} == 0 )); then
+  echo "❌ Non ho trovato repository validi in '$SITEMAP'"
   exit 1
 fi
 
-###################################
-# 4) GENERAZIONE sitemap.xml      #
-###################################
-echo "4) Generazione $SITEMAP…"
-{
-  echo '<?xml version="1.0" encoding="UTF-8"?>'
-  echo '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
-  # root del tuo sito Pages
-  echo "  <url>"
-  echo "    <loc>${BASE_URL}/</loc>"
-  echo "    <lastmod>${TODAY}</lastmod>"
-  echo "    <changefreq>daily</changefreq>"
-  echo "    <priority>1.0</priority>"
-  echo "  </url>"
+# 2) Prepara dir di lavoro
+rm -rf "$TMPDIR"
+mkdir -p "$TMPDIR"
 
-  # ogni URL spiderizzato
-  for u in "${URLS[@]}"; do
-    # se manca estensione file, assicura lo slash finale
-    if [[ ! "$u" =~ \.[a-zA-Z0-9]+$ ]]; then
-      u="${u%/}/"
-    fi
-    echo "  <url>"
-    echo "    <loc>${u}</loc>"
-    echo "    <lastmod>${TODAY}</lastmod>"
-    echo "    <changefreq>monthly</changefreq>"
-    echo "    <priority>0.6</priority>"
-    echo "  </url>"
-  done
+# 3) Clona e crea index.html dove serve
+for r in "${repos[@]}"; do
+  echo "→ Clono e controllo '$r'…"
+  git clone --depth=1 "https://github.com/${USER}/${r}.git" "$TMPDIR/$r" \
+    >/dev/null 2>&1 || {
+      echo "   ❌ Clone fallito per '$r', skip."
+      continue
+    }
 
-  echo '</urlset>'
-} > "$SITEMAP"
+  cd "$TMPDIR/$r"
 
-echo "✅ Sitemap creata in '$SITEMAP' con ${#URLS[@]} URL"
-echo "ℹ️  Log spidering: $SPIDER_LOG"
-echo "ℹ️  Ricorda in robots.txt: Sitemap: ${BASE_URL}/${SITEMAP}"
+  if [[ ! -f index.html ]]; then
+    echo "   📄 Creo index.html in '$r'"
+
+    cat > index.html <<HTML
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>${r}</title>
+</head>
+<body>
+  <h1>Repository: ${r}</h1>
+  <ul>
+HTML
+
+    # Lista i file .html presenti (esclude index.html)
+    for f in *.html; do
+      [[ "$f" == "index.html" ]] && continue
+      echo "    <li><a href=\"${f}\">${f}</a></li>" >> index.html
+    done
+
+    cat >> index.html <<HTML
+  </ul>
+</body>
+</html>
+HTML
+
+    git add index.html
+    git commit -m "chore: auto-generate index.html"
+    git push origin HEAD >/dev/null 2>&1 \
+      && echo "   ✅ index.html creato e pushato" \
+      || echo "   ⚠️  push fallito, controlla permessi"
+  else
+    echo "   ℹ️  index.html già presente, skip."
+  fi
+
+  cd - >/dev/null
+done
+
+echo "✅ Fatto! index.html elaborati per ${#repos[@]} repo."
